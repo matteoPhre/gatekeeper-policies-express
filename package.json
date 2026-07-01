@@ -5,10 +5,15 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.mjs",
-    "dev": "node --watch src/server.mjs"
+    "dev": "node --watch src/server.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@matteophre/gatekeeper-policies": "^1.2.2",
     "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0",
+    "vitest": "^4.1.8"
   }
 }

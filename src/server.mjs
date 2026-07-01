@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { pathToFileURL } from "node:url";
 import express from "express";
 import {
   IdentityPolicyEngine,
@@ -72,113 +73,119 @@ const engine = new IdentityPolicyEngine({
   },
 });
 
-const app = express();
-app.use(express.json());
+export function createApp() {
+  const app = express();
+  app.use(express.json());
 
-const expiryMiddleware = createStatusJsonExpiryMiddleware({
-  getUserIdAndDateFn: async (req) => {
-    const userId = String(req.header("x-user-id") ?? "").trim();
-    if (!userId) {
-      throw new Error("Missing x-user-id header.");
+  const expiryMiddleware = createStatusJsonExpiryMiddleware({
+    getUserIdAndDateFn: async (req) => {
+      const userId = String(req.header("x-user-id") ?? "").trim();
+      if (!userId) {
+        throw new Error("Missing x-user-id header.");
+      }
+
+      const user = users.get(userId);
+      const headerDate = req.header("x-password-created-at");
+      const passwordCreatedAt = headerDate
+        ? new Date(headerDate)
+        : user?.passwordCreatedAt ?? new Date(0);
+
+      return { userId, passwordCreatedAt };
+    },
+    evaluatePasswordExpiryDecision: (passwordCreatedAt) =>
+      engine.evaluatePasswordExpiryDecision(passwordCreatedAt),
+  });
+
+  app.get("/", (_req, res) => {
+    res.json({
+      service: "gatekeeper-policies-express",
+      message: "Use /password/validate, /password/change and /protected/profile",
+      users: ["alice", "bob"],
+    });
+  });
+
+  app.get("/demo/users", (_req, res) => {
+    const payload = Array.from(users.entries()).map(([userId, data]) => ({
+      userId,
+      passwordCreatedAt: data.passwordCreatedAt.toISOString(),
+      historyCount: data.passwordHistory.length,
+    }));
+
+    res.json(payload);
+  });
+
+  app.post("/password/validate", (req, res) => {
+    const password = String(req.body?.password ?? "");
+    const complexity = engine.validateComplexity(password);
+    res.status(complexity.isValid ? 200 : 400).json(complexity);
+  });
+
+  app.post("/password/change", async (req, res) => {
+    const userId = String(req.body?.userId ?? "").trim();
+    const newPassword = String(req.body?.newPassword ?? "");
+
+    if (!userId || !newPassword) {
+      res.status(400).json({
+        code: "BAD_REQUEST",
+        message: "userId and newPassword are required.",
+      });
+      return;
     }
 
-    const user = users.get(userId);
-    const headerDate = req.header("x-password-created-at");
-    const passwordCreatedAt = headerDate
-      ? new Date(headerDate)
-      : user?.passwordCreatedAt ?? new Date(0);
+    const complexity = engine.validateComplexity(newPassword);
+    if (!complexity.isValid) {
+      res.status(400).json({
+        code: "WEAK_PASSWORD",
+        details: complexity.errors,
+      });
+      return;
+    }
 
-    return { userId, passwordCreatedAt };
-  },
-  evaluatePasswordExpiryDecision: (passwordCreatedAt) =>
-    engine.evaluatePasswordExpiryDecision(passwordCreatedAt),
-});
+    const canRotate = await engine.validateRotation(
+      newPassword,
+      userId,
+      async (candidate, encrypted) => sha256(toUtf8String(candidate)) === encrypted,
+    );
 
-app.get("/", (_req, res) => {
-  res.json({
-    service: "gatekeeper-policies-express",
-    message: "Use /password/validate, /password/change and /protected/profile",
-    users: ["alice", "bob"],
+    if (!canRotate) {
+      res.status(409).json({
+        code: "PASSWORD_REUSED",
+        message: "Password was already used recently.",
+      });
+      return;
+    }
+
+    await engine.getConfig().persistence.saveNewPassword(userId, sha256(newPassword));
+
+    res.status(200).json({
+      code: "PASSWORD_UPDATED",
+      userId,
+    });
   });
-});
 
-app.get("/demo/users", (_req, res) => {
-  const payload = Array.from(users.entries()).map(([userId, data]) => ({
-    userId,
-    passwordCreatedAt: data.passwordCreatedAt.toISOString(),
-    historyCount: data.passwordHistory.length,
-  }));
+  app.get("/protected/profile", expiryMiddleware, (req, res) => {
+    const userId = String(req.header("x-user-id") ?? "unknown");
+    res.json({
+      userId,
+      profile: {
+        role: "demo-user",
+        data: "Access granted: password policy check passed.",
+      },
+    });
+  });
 
-  res.json(payload);
-});
-
-app.post("/password/validate", (req, res) => {
-  const password = String(req.body?.password ?? "");
-  const complexity = engine.validateComplexity(password);
-  res.status(complexity.isValid ? 200 : 400).json(complexity);
-});
-
-app.post("/password/change", async (req, res) => {
-  const userId = String(req.body?.userId ?? "").trim();
-  const newPassword = String(req.body?.newPassword ?? "");
-
-  if (!userId || !newPassword) {
+  app.use((error, _req, res, _next) => {
     res.status(400).json({
       code: "BAD_REQUEST",
-      message: "userId and newPassword are required.",
+      message: error instanceof Error ? error.message : "Unexpected error.",
     });
-    return;
-  }
-
-  const complexity = engine.validateComplexity(newPassword);
-  if (!complexity.isValid) {
-    res.status(400).json({
-      code: "WEAK_PASSWORD",
-      details: complexity.errors,
-    });
-    return;
-  }
-
-  const canRotate = await engine.validateRotation(
-    newPassword,
-    userId,
-    async (candidate, encrypted) => sha256(toUtf8String(candidate)) === encrypted,
-  );
-
-  if (!canRotate) {
-    res.status(409).json({
-      code: "PASSWORD_REUSED",
-      message: "Password was already used recently.",
-    });
-    return;
-  }
-
-  await engine.getConfig().persistence.saveNewPassword(userId, sha256(newPassword));
-
-  res.status(200).json({
-    code: "PASSWORD_UPDATED",
-    userId,
   });
-});
 
-app.get("/protected/profile", expiryMiddleware, (req, res) => {
-  const userId = String(req.header("x-user-id") ?? "unknown");
-  res.json({
-    userId,
-    profile: {
-      role: "demo-user",
-      data: "Access granted: password policy check passed.",
-    },
+  return app;
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  createApp().listen(PORT, () => {
+    console.log(`Express playground running on http://localhost:${PORT}`);
   });
-});
-
-app.use((error, _req, res, _next) => {
-  res.status(400).json({
-    code: "BAD_REQUEST",
-    message: error instanceof Error ? error.message : "Unexpected error.",
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`Express playground running on http://localhost:${PORT}`);
-});
+}
