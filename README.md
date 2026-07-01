@@ -1,37 +1,35 @@
 # gatekeeper-policies-express
 
-Playground Express per provare `@matteophre/gatekeeper-policies` in modo isolato.
+Express playground for `@matteophre/gatekeeper-policies`.
 
-## Avvio
+## Run
 
 ```bash
 npm install
 npm start
 ```
 
-Server di default su `http://localhost:3001`.
+Default URL: `http://localhost:3001`
 
-## Endpoint
+## API
 
-- `GET /` stato servizio
-- `GET /demo/users` utenti demo
-- `POST /password/validate` validazione complessita
-- `POST /password/change` cambio password con controllo history
-- `GET /protected/profile` route protetta con expiry middleware
+- `GET /` service info
+- `GET /demo/users` demo users
+- `POST /password/validate` complexity validation
+- `POST /password/change` complexity + history checks
+- `GET /protected/profile` protected route with expiry middleware
 
-## Esempi veloci
+## Quick checks
 
 ```bash
-curl -X POST http://localhost:3001/password/validate -H "Content-Type: application/json" -d '{"password":"StrongPassword#2026"}'
+curl -X POST http://localhost:3001/password/validate -H "Content-Type: application/json" -d '{"password":"StrongGate#2026"}'
 ```
 
 ```bash
 curl http://localhost:3001/protected/profile -H "x-user-id: alice"
 ```
 
-## CI e test su GitHub Actions
+## GitHub Actions
 
-- workflow `CI`: esegue `npm ci` + `npm test` su push e pull request
-- workflow `Manual Password Check`: avvio manuale da Actions con input `password`
-
-Se la password non rispetta la policy, il job fallisce mostrando il dettaglio della validazione.
+- `CI`: runs `npm ci` and `npm test` on push and pull requests
+- `Manual Password Check`: `workflow_dispatch` with a `password` input
